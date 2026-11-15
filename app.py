@@ -106,7 +106,15 @@ if audio_data.duration > 20:
 try:
     outputs = apply_filters(audio_data, float(cutoff), window, taps)
     voice = analyze_voice(audio_data.samples, audio_data.sample_rate)
-    rows, recommended, reason = proxy_scores(audio_data, outputs, float(cutoff))
+    # Use ground-truth evaluation only when the clean reference is available
+    # (the simulated demo). Real recordings use no-reference proxy measures.
+    if audio_data.clean_reference is not None:
+        rows = reference_scores(audio_data, outputs)
+        recommended, reason = recommend_with_reference(rows)
+        evaluation_mode = "reference"
+    else:
+        rows, recommended, reason = proxy_scores(audio_data, outputs, float(cutoff))
+        evaluation_mode = "proxy"
 except (ValueError, MemoryError) as exc:
     st.error(f"Analysis failed: {exc}"); st.stop()
 
@@ -119,7 +127,7 @@ c4.metric("Peak amplitude", f"{voice['peak']:.4f}")
 
 st.subheader("Voice characteristics")
 a,b,c,d = st.columns(4)
-a.metric("Estimated average pitch", metric(voice['pitch_mean'], " Hz", 1))
+a.metric("Estimated median pitch", metric(voice['pitch_mean'], " Hz", 1))
 b.metric("Pitch range (10–90%)", (f"{voice['pitch_min']:.0f}–{voice['pitch_max']:.0f} Hz" if voice['pitch_min'] is not None else "Not detected"))
 c.metric("Speech activity", f"{voice['speech_activity_pct']:.1f}%")
 d.metric("Silence / pauses", f"{voice['silence_pct']:.1f}%")
@@ -137,7 +145,10 @@ else:
 st.subheader("Noise reduction results")
 st.dataframe(rows, use_container_width=True, hide_index=True)
 st.success(f"**Suggested filter: {recommended}.** {reason}")
-st.caption("For a natural voice recording, these are frequency-band preservation/reduction proxies. They are not true SNR or MSE because no clean reference speech signal is available.")
+if evaluation_mode == "reference":
+    st.caption("Reference-based evaluation: each output is compared with the known clean simulated signal. SNR and MSE are calculated against that reference.")
+else:
+    st.caption("No-reference evaluation: the recording has no known clean reference. The table reports frequency-band reduction and preservation proxies, not true SNR or MSE.")
 selected = st.selectbox("Select output to listen to", list(outputs), index=list(outputs).index(recommended))
 cleaned = outputs[selected]
 
