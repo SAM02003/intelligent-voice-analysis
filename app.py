@@ -146,24 +146,11 @@ with sig_tab:
     fig = waveform_plot(audio_data.samples, cleaned, audio_data.sample_rate); st.pyplot(fig, use_container_width=True); plt.close(fig)
     fig = spectrum_plot(audio_data.samples, cleaned, audio_data.sample_rate); st.pyplot(fig, use_container_width=True); plt.close(fig)
 with spec_tab:
-    # Compute STFT for both the original and the selected enhanced output.
-    f_orig, t_orig, z_orig = spectrogram_figure_data(audio_data.samples, audio_data.sample_rate)
-    f_enh, t_enh, z_enh = spectrogram_figure_data(cleaned, audio_data.sample_rate)
-
-    # Shared colour scale and frequency range make the comparison meaningful.
-    fig, axes = plt.subplots(2, 1, figsize=(11, 8), constrained_layout=True)
-    plots = [
-        (axes[0], t_orig, f_orig, z_orig, "Original voice · STFT spectrogram"),
-        (axes[1], t_enh, f_enh, z_enh, f"Enhanced voice · {selected} · STFT spectrogram"),
-    ]
-    for ax, times, freqs, magnitude, title in plots:
-        mesh = ax.pcolormesh(times, freqs, magnitude, shading="auto",
-                             cmap="magma", vmin=-100, vmax=-20)
-        ax.set_ylim(0, min(8000, audio_data.sample_rate / 2))
-        ax.set(xlabel="Time (s)", ylabel="Frequency (Hz)", title=title)
-        fig.colorbar(mesh, ax=ax, label="Magnitude (dB)")
-    st.pyplot(fig, use_container_width=True)
-    plt.close(fig)
+    f,t,z = spectrogram_figure_data(audio_data.samples, audio_data.sample_rate)
+    fig,ax = plt.subplots(figsize=(11,4), constrained_layout=True)
+    mesh=ax.pcolormesh(t,f,z,shading="auto",cmap="magma",vmin=-100,vmax=-20)
+    ax.set_ylim(0,min(8000,audio_data.sample_rate/2)); ax.set(xlabel="Time (s)",ylabel="Frequency (Hz)",title="Original voice · STFT spectrogram")
+    fig.colorbar(mesh,ax=ax,label="Magnitude (dB)"); st.pyplot(fig,use_container_width=True); plt.close(fig)
 with audio_tab:
     left,right=st.columns(2)
     with left:
@@ -173,15 +160,67 @@ with audio_tab:
         cleaned_bytes=wav_bytes(cleaned,audio_data.sample_rate); st.audio(cleaned_bytes,format="audio/wav")
         st.download_button("Download enhanced WAV",cleaned_bytes,file_name="enhanced_voice.wav",mime="audio/wav",type="primary")
 
-st.subheader("Interpretation")
-notes=[]
-if voice['clipping_pct'] > .1: notes.append("Some samples are near full scale; move the microphone slightly farther away or reduce input gain.")
-if voice['silence_pct'] > 45: notes.append("A substantial portion of the recording is low-energy silence or pauses.")
-if voice['pitch_mean'] is None: notes.append("A stable pitch could not be estimated. This can happen with quiet, breathy, noisy or unvoiced speech.")
-if voice['noise_dbfs_est'] is not None: notes.append(f"Estimated low-energy background level: {voice['noise_dbfs_est']:.1f} dBFS.")
-if not notes: notes.append("No major clipping or unusually long silence was detected by these basic checks. Listen to the enhanced result to judge whether speech quality was preserved.")
-for note in notes: st.write("• " + note)
-st.caption("Pitch and acoustic measurements describe this recording only. They are not medical assessments or definitive judgments of a person's voice.")
+st.subheader("Recording-specific interpretation")
+notes = []
+
+# Signal level and recording quality
+if voice["clipping_pct"] >= 1.0:
+    notes.append(f"Clipping is noticeable ({voice['clipping_pct']:.2f}% of samples). Reduce microphone/input gain and record again to avoid distortion.")
+elif voice["clipping_pct"] > 0.05:
+    notes.append(f"A small amount of clipping was detected ({voice['clipping_pct']:.2f}%). The recording is close to the maximum digital level in a few places.")
+else:
+    notes.append(f"Clipping is negligible ({voice['clipping_pct']:.3f}%), so there is little evidence of peak-level digital distortion.")
+
+if voice["rms"] < 0.02:
+    notes.append(f"The overall signal level is low (RMS {voice['rms']:.4f}); a closer microphone position or modest input-gain increase may help.")
+elif voice["rms"] > 0.25:
+    notes.append(f"The recording has relatively high average signal energy (RMS {voice['rms']:.4f}). Check playback for distortion or excessive loudness.")
+else:
+    notes.append(f"The overall signal energy is moderate (RMS {voice['rms']:.4f}).")
+
+# Speech activity and pauses
+activity = voice["speech_activity_pct"]
+silence = voice["silence_pct"]
+if activity >= 85:
+    notes.append(f"Speech/activity occupies most of the clip ({activity:.1f}%), with relatively few pauses ({silence:.1f}%).")
+elif activity >= 50:
+    notes.append(f"The clip contains a mixture of active speech and pauses: activity {activity:.1f}%, pauses/low-energy frames {silence:.1f}%.")
+else:
+    notes.append(f"A large part of the clip is classified as low-energy or pause time (activity {activity:.1f}%, pauses {silence:.1f}%). This may reflect long pauses, quiet speech, or background conditions.")
+
+# Pitch characteristics: describe measured pitch, without inferring identity or emotion.
+if voice["pitch_mean"] is None:
+    notes.append("A reliable periodic pitch estimate was not obtained. This can occur with unvoiced speech, weak/quiet voice, or noisy recordings.")
+else:
+    pitch_span = voice["pitch_max"] - voice["pitch_min"]
+    notes.append(f"The estimated median voiced pitch is {voice['pitch_mean']:.1f} Hz, with a 10th–90th percentile range of {voice['pitch_min']:.1f}–{voice['pitch_max']:.1f} Hz (spread {pitch_span:.1f} Hz). This describes periodic voiced frames only.")
+
+# Spectral characteristics
+centroid = voice["spectral_centroid"]
+bandwidth = voice["spectral_bandwidth"]
+if centroid < 1000:
+    centroid_desc = "energy is weighted toward lower frequencies"
+elif centroid < 2500:
+    centroid_desc = "the spectral energy is centred in a lower-to-mid frequency region"
+else:
+    centroid_desc = "the spectrum has a comparatively high-frequency weighting"
+notes.append(f"The spectral centroid is {centroid:.0f} Hz, indicating that {centroid_desc}. The spectral bandwidth is {bandwidth:.0f} Hz, describing the spread of spectral energy.")
+
+if voice["zcr"] >= 0.15:
+    notes.append(f"The zero-crossing rate is relatively high ({voice['zcr']:.3f}); this can be associated with noisy, unvoiced, or high-frequency content and should be interpreted alongside the spectrum.")
+elif voice["zcr"] <= 0.03:
+    notes.append(f"The zero-crossing rate is low ({voice['zcr']:.3f}), indicating relatively few sign changes between adjacent samples.")
+else:
+    notes.append(f"The zero-crossing rate is {voice['zcr']:.3f}, a measure of how frequently the waveform changes sign.")
+
+if voice["noise_dbfs_est"] is not None:
+    notes.append(f"The estimated low-energy background level is {voice['noise_dbfs_est']:.1f} dBFS. The within-recording speech-to-background estimate is {voice['snr_est']:.1f} dB; treat it as approximate because quiet speech may be counted as background.")
+else:
+    notes.append("A separate low-energy background region was not detected, so a background-noise estimate could not be made reliably. A short room-tone pause before speaking can improve this estimate.")
+
+for note in notes:
+    st.write("• " + note)
+st.caption("These observations are calculated from this recording's acoustic measurements. They are signal-quality descriptions, not medical, emotional, or speaker-identity assessments.")
 
 with st.expander("Methods and project notes"):
     st.markdown("""
@@ -191,6 +230,6 @@ with st.expander("Methods and project notes"):
 - **FFT:** displays the recording's frequency content.
 - **STFT:** shows how frequency content changes over time.
 - **Silence/activity:** estimated using a short-time RMS threshold; quiet speech may be mistaken for silence.
-- **Filtering:** moving average, fourth-order Butterworth IIR, Hamming-window FIR, optional 50/60 Hz notch + FIR, STFT Wiener filtering, and soft spectral gating.
+- **Filtering:** moving average, fourth-order Butterworth IIR, Hamming-window FIR, and optional 50/60 Hz notch + FIR.
 - **No-reference limitation:** without a clean copy of the same speech, true SNR and MSE cannot be measured. The filter table uses band-energy proxies only.
 """)
