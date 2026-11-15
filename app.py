@@ -146,11 +146,22 @@ with sig_tab:
     fig = waveform_plot(audio_data.samples, cleaned, audio_data.sample_rate); st.pyplot(fig, use_container_width=True); plt.close(fig)
     fig = spectrum_plot(audio_data.samples, cleaned, audio_data.sample_rate); st.pyplot(fig, use_container_width=True); plt.close(fig)
 with spec_tab:
-    f,t,z = spectrogram_figure_data(audio_data.samples, audio_data.sample_rate)
-    fig,ax = plt.subplots(figsize=(11,4), constrained_layout=True)
-    mesh=ax.pcolormesh(t,f,z,shading="auto",cmap="magma",vmin=-100,vmax=-20)
-    ax.set_ylim(0,min(8000,audio_data.sample_rate/2)); ax.set(xlabel="Time (s)",ylabel="Frequency (Hz)",title="Original voice · STFT spectrogram")
-    fig.colorbar(mesh,ax=ax,label="Magnitude (dB)"); st.pyplot(fig,use_container_width=True); plt.close(fig)
+    # Compare original and selected enhanced audio using the same STFT colour scale.
+    f_orig, t_orig, z_orig = spectrogram_figure_data(audio_data.samples, audio_data.sample_rate)
+    f_enh, t_enh, z_enh = spectrogram_figure_data(cleaned, audio_data.sample_rate)
+    fig, axes = plt.subplots(1, 2, figsize=(13, 4.5), sharey=True, constrained_layout=True)
+    vmin, vmax = -100, -20
+    mesh = axes[0].pcolormesh(t_orig, f_orig, z_orig, shading="auto", cmap="magma", vmin=vmin, vmax=vmax)
+    axes[0].set_title("Original voice · STFT spectrogram")
+    axes[1].pcolormesh(t_enh, f_enh, z_enh, shading="auto", cmap="magma", vmin=vmin, vmax=vmax)
+    axes[1].set_title(f"Enhanced voice · {selected}")
+    for ax in axes:
+        ax.set_ylim(0, min(8000, audio_data.sample_rate / 2))
+        ax.set_xlabel("Time (s)")
+    axes[0].set_ylabel("Frequency (Hz)")
+    fig.colorbar(mesh, ax=axes, label="Magnitude (dB)", shrink=0.9)
+    st.pyplot(fig, use_container_width=True)
+    plt.close(fig)
 with audio_tab:
     left,right=st.columns(2)
     with left:
