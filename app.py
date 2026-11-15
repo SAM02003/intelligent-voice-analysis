@@ -146,11 +146,24 @@ with sig_tab:
     fig = waveform_plot(audio_data.samples, cleaned, audio_data.sample_rate); st.pyplot(fig, use_container_width=True); plt.close(fig)
     fig = spectrum_plot(audio_data.samples, cleaned, audio_data.sample_rate); st.pyplot(fig, use_container_width=True); plt.close(fig)
 with spec_tab:
-    f,t,z = spectrogram_figure_data(audio_data.samples, audio_data.sample_rate)
-    fig,ax = plt.subplots(figsize=(11,4), constrained_layout=True)
-    mesh=ax.pcolormesh(t,f,z,shading="auto",cmap="magma",vmin=-100,vmax=-20)
-    ax.set_ylim(0,min(8000,audio_data.sample_rate/2)); ax.set(xlabel="Time (s)",ylabel="Frequency (Hz)",title="Original voice · STFT spectrogram")
-    fig.colorbar(mesh,ax=ax,label="Magnitude (dB)"); st.pyplot(fig,use_container_width=True); plt.close(fig)
+    # Compute STFT for both the original and the selected enhanced output.
+    f_orig, t_orig, z_orig = spectrogram_figure_data(audio_data.samples, audio_data.sample_rate)
+    f_enh, t_enh, z_enh = spectrogram_figure_data(cleaned, audio_data.sample_rate)
+
+    # Shared colour scale and frequency range make the comparison meaningful.
+    fig, axes = plt.subplots(2, 1, figsize=(11, 8), constrained_layout=True)
+    plots = [
+        (axes[0], t_orig, f_orig, z_orig, "Original voice · STFT spectrogram"),
+        (axes[1], t_enh, f_enh, z_enh, f"Enhanced voice · {selected} · STFT spectrogram"),
+    ]
+    for ax, times, freqs, magnitude, title in plots:
+        mesh = ax.pcolormesh(times, freqs, magnitude, shading="auto",
+                             cmap="magma", vmin=-100, vmax=-20)
+        ax.set_ylim(0, min(8000, audio_data.sample_rate / 2))
+        ax.set(xlabel="Time (s)", ylabel="Frequency (Hz)", title=title)
+        fig.colorbar(mesh, ax=ax, label="Magnitude (dB)")
+    st.pyplot(fig, use_container_width=True)
+    plt.close(fig)
 with audio_tab:
     left,right=st.columns(2)
     with left:
@@ -178,6 +191,6 @@ with st.expander("Methods and project notes"):
 - **FFT:** displays the recording's frequency content.
 - **STFT:** shows how frequency content changes over time.
 - **Silence/activity:** estimated using a short-time RMS threshold; quiet speech may be mistaken for silence.
-- **Filtering:** moving average, fourth-order Butterworth IIR, Hamming-window FIR, and optional 50/60 Hz notch + FIR.
+- **Filtering:** moving average, fourth-order Butterworth IIR, Hamming-window FIR, optional 50/60 Hz notch + FIR, STFT Wiener filtering, and soft spectral gating.
 - **No-reference limitation:** without a clean copy of the same speech, true SNR and MSE cannot be measured. The filter table uses band-energy proxies only.
 """)
