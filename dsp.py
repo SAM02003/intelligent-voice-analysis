@@ -16,7 +16,7 @@ MAX_RATE = 48_000
 MIN_SECONDS = 0.25
 MAX_SECONDS = 20.0
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
-METHODS = ("Moving average", "Butterworth", "FIR")
+METHODS = ("Moving average", "Butterworth", "FIR", "Wiener filter", "Spectral gating")
 
 
 @dataclass(frozen=True)
@@ -145,8 +145,74 @@ def detect_hum(data: AudioData) -> int | None:
     return None
 
 
+
+def _stft_denoise_channel(x: np.ndarray, sample_rate: int, mode: str) -> np.ndarray:
+    """STFT-domain Wiener or soft spectral-gating denoising for one channel."""
+    x = np.asarray(x, dtype=np.float64)
+    original_length = len(x)
+    nperseg = min(512, max(128, 2 ** int(np.floor(np.log2(max(128, original_length // 4))))))
+    nperseg = min(nperseg, original_length)
+    if nperseg < 32:
+        return x.copy()
+    noverlap = min(3 * nperseg // 4, nperseg - 1)
+
+    freqs, times, spectrum = signal.stft(
+        x, fs=sample_rate, window="hann", nperseg=nperseg,
+        noverlap=noverlap, boundary="zeros", padded=True
+    )
+    magnitude = np.abs(spectrum)
+    power = magnitude ** 2
+
+    # Estimate stationary background from the quietest 20% of time frames.
+    frame_energy = np.mean(power, axis=0)
+    quiet_count = max(1, int(np.ceil(0.20 * len(frame_energy))))
+    quiet_indices = np.argsort(frame_energy)[:quiet_count]
+    noise_power = np.mean(power[:, quiet_indices], axis=1, keepdims=True)
+    eps = np.finfo(np.float64).eps
+
+    if mode == "wiener":
+        # Wiener gain: estimated clean-signal power / total observed power.
+        gain = np.maximum(power - noise_power, 0.0) / (power + eps)
+        gain = np.clip(gain, 0.05, 1.0)
+        # Light smoothing reduces musical-noise fluctuations.
+        gain = ndimage.gaussian_filter(gain, sigma=(0.8, 0.6))
+    elif mode == "spectral":
+        # Soft spectral gate with a conservative floor to avoid chopping speech.
+        noise_magnitude = np.sqrt(noise_power)
+        threshold = 1.5 * noise_magnitude
+        gain = 1.0 - threshold / (magnitude + eps)
+        gain = np.clip(gain, 0.10, 1.0)
+        gain = ndimage.gaussian_filter(gain, sigma=(1.0, 0.8))
+    else:
+        raise ValueError("Unknown STFT denoising mode.")
+
+    _, reconstructed = signal.istft(
+        spectrum * gain, fs=sample_rate, window="hann",
+        nperseg=nperseg, noverlap=noverlap, input_onesided=True,
+        boundary=True
+    )
+    if len(reconstructed) < original_length:
+        reconstructed = np.pad(reconstructed, (0, original_length - len(reconstructed)))
+    return np.asarray(reconstructed[:original_length], dtype=np.float64)
+
+
+def wiener_filter(x: np.ndarray, sample_rate: int) -> np.ndarray:
+    """Apply conservative STFT Wiener filtering independently to each channel."""
+    return np.column_stack([
+        _stft_denoise_channel(x[:, channel], sample_rate, "wiener")
+        for channel in range(x.shape[1])
+    ])
+
+
+def spectral_gating(x: np.ndarray, sample_rate: int) -> np.ndarray:
+    """Apply soft STFT spectral gating independently to each channel."""
+    return np.column_stack([
+        _stft_denoise_channel(x[:, channel], sample_rate, "spectral")
+        for channel in range(x.shape[1])
+    ])
+
 def apply_filters(data: AudioData, cutoff_hz: float, moving_window: int = 9, fir_taps: int = 101) -> dict[str, np.ndarray]:
-    """Run three low-pass alternatives independently, per channel, without gain changes."""
+    """Run classical filters and STFT denoisers independently on each recording."""
     validate_settings(data.sample_rate, cutoff_hz, moving_window, fir_taps)
     x = data.samples
     moving = ndimage.uniform_filter1d(x, size=moving_window, axis=0, mode="reflect")
@@ -154,7 +220,14 @@ def apply_filters(data: AudioData, cutoff_hz: float, moving_window: int = 9, fir
     butter = signal.sosfiltfilt(sos, x, axis=0)
     taps = signal.firwin(fir_taps, cutoff_hz, fs=data.sample_rate, window="hamming")
     fir = signal.filtfilt(taps, [1.0], x, axis=0)
-    outputs = dict(zip(METHODS, (moving, butter, fir)))
+
+    outputs = {
+        "Moving average": moving,
+        "Butterworth": butter,
+        "FIR": fir,
+        "Wiener filter": wiener_filter(x, data.sample_rate),
+        "Spectral gating": spectral_gating(x, data.sample_rate),
+    }
     hum_hz = detect_hum(data)
     if hum_hz is not None:
         b, a = signal.iirnotch(hum_hz, Q=30, fs=data.sample_rate)
@@ -235,7 +308,7 @@ def recommend_with_reference(rows: list[dict[str, float | str]]) -> tuple[str, s
     original_mse = float(rows[0]["MSE"])
     best = min(rows[1:], key=lambda r: r["MSE"])
     if float(best["MSE"]) >= original_mse:
-        return str(best["Method"]), "This is the best of the three filters by MSE, but none improves on the noisy original."
+        return str(best["Method"]), "This is the best available method by MSE, but none improves on the noisy original."
     return str(best["Method"]), "Lowest MSE against the known clean signal; equivalently, highest output SNR."
 
 
